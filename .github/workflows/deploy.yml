@@ -29,13 +29,30 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
-          terraform_version: 1.7.9   # Use a stable Terraform version
+          terraform_version: 1.7.9
 
-      - name: Setup AWS CLI
+      - name: Configure AWS Credentials (Dev)
+        if: github.event.inputs.environment == 'dev'
         uses: aws-actions/configure-aws-credentials@v2
         with:
-          aws-access-key-id: ${{ secrets['AWS_ACCESS_KEY_ID_' + github.event.inputs.environment] }}
-          aws-secret-access-key: ${{ secrets['AWS_SECRET_ACCESS_KEY_' + github.event.inputs.environment] }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_DEV }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_DEV }}
+          aws-region: us-east-1
+
+      - name: Configure AWS Credentials (Stage)
+        if: github.event.inputs.environment == 'stage'
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_STAGE }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_STAGE }}
+          aws-region: us-east-1
+
+      - name: Configure AWS Credentials (Prod)
+        if: github.event.inputs.environment == 'prod'
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
           aws-region: us-east-1
 
       - name: Terraform Init
@@ -50,16 +67,8 @@ jobs:
         working-directory: ./environments/${{ github.event.inputs.environment }}
         run: terraform plan -out=tfplan
 
-      - name: Terraform Apply (Manual Approval)
-        if: github.event.inputs.environment != 'dev'
-        uses: hmarr/auto-approve-action@v2
-        with:
-          comment: 'Approving Terraform Apply for non-dev environment'
-        # For stage/prod, use GitHub Environment Protection Rules to require approval
-
-      - name: Terraform Apply (Dev)
-        if: github.event.inputs.environment == 'dev'
-        working-directory: ./environments/dev
+      - name: Terraform Apply
+        working-directory: ./environments/${{ github.event.inputs.environment }}
         run: terraform apply -auto-approve tfplan
 
   docker:
@@ -72,11 +81,28 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v3
 
-      - name: Setup AWS CLI
+      - name: Configure AWS Credentials (Dev)
+        if: github.event.inputs.environment == 'dev'
         uses: aws-actions/configure-aws-credentials@v2
         with:
-          aws-access-key-id: ${{ secrets['AWS_ACCESS_KEY_ID_' + github.event.inputs.environment] }}
-          aws-secret-access-key: ${{ secrets['AWS_SECRET_ACCESS_KEY_' + github.event.inputs.environment] }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_DEV }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_DEV }}
+          aws-region: us-east-1
+
+      - name: Configure AWS Credentials (Stage)
+        if: github.event.inputs.environment == 'stage'
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_STAGE }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_STAGE }}
+          aws-region: us-east-1
+
+      - name: Configure AWS Credentials (Prod)
+        if: github.event.inputs.environment == 'prod'
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
           aws-region: us-east-1
 
       - name: Login to Amazon ECR
