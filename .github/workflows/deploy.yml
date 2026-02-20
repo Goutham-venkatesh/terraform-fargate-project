@@ -1,12 +1,11 @@
-name: Deploy Fargate Microservices
+name: Deploy to AWS Fargate
 
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Select environment to deploy'
+        description: 'Select environment'
         required: true
-        default: dev
         type: choice
         options:
           - dev
@@ -15,79 +14,137 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
 
 jobs:
   terraform:
     name: Terraform Deploy
     runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment }}
-    
-    # Use standard shell for all steps
-    defaults:
-      run:
-        working-directory: ./environments/${{ github.event.inputs.environment }}
 
     steps:
-      - name: Checkout Repo
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.7.5"
+          terraform_version: 1.7.5
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v2
         with:
-          # Dynamically picks secret based on input (e.g., AWS_ACCESS_KEY_ID_DEV)
-          aws-access-key-id: ${{ secrets[format('AWS_ACCESS_KEY_ID_{0}', github.event.inputs.environment)] }}
-          aws-secret-access-key: ${{ secrets[format('AWS_SECRET_ACCESS_KEY_{0}', github.event.inputs.environment)] }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_DEV }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_DEV }}
           aws-region: ${{ env.AWS_REGION }}
+        if: ${{ github.event.inputs.environment == 'dev' }}
+
+      - name: Configure AWS Credentials for Stage
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_STAGE }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_STAGE }}
+          aws-region: ${{ env.AWS_REGION }}
+        if: ${{ github.event.inputs.environment == 'stage' }}
+
+      - name: Configure AWS Credentials for Prod
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+        if: ${{ github.event.inputs.environment == 'prod' }}
 
       - name: Terraform Init
-        run: terraform init
+        run: terraform -chdir=./environments/${{ github.event.inputs.environment }} init
 
       - name: Terraform Validate
-        run: terraform validate
+        run: terraform -chdir=./environments/${{ github.event.inputs.environment }} validate
 
       - name: Terraform Plan
-        run: terraform plan -out=tfplan
+        run: terraform -chdir=./environments/${{ github.event.inputs.environment }} plan -out=tfplan
 
       - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
+        run: terraform -chdir=./environments/${{ github.event.inputs.environment }} apply -auto-approve tfplan
 
   docker:
     name: Build & Push Docker Images
     runs-on: ubuntu-latest
     needs: terraform
-    environment: ${{ github.event.inputs.environment }}
 
     steps:
-      - name: Checkout Repo
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Configure AWS Credentials (Docker)
+        uses: aws-actions/configure-aws-credentials@v2
         with:
-          aws-access-key-id: ${{ secrets[format('AWS_ACCESS_KEY_ID_{0}', github.event.inputs.environment)] }}
-          aws-secret-access-key: ${{ secrets[format('AWS_SECRET_ACCESS_KEY_{0}', github.event.inputs.environment)] }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_DEV }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_DEV }}
           aws-region: ${{ env.AWS_REGION }}
+        if: ${{ github.event.inputs.environment == 'dev' }}
 
-      - name: Login to Amazon ECR
-        id: ecr-login
-        uses: aws-actions/amazon-ecr-login@v2
+      - name: Configure AWS Credentials for Stage (Docker)
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_STAGE }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_STAGE }}
+          aws-region: ${{ env.AWS_REGION }}
+        if: ${{ github.event.inputs.environment == 'stage' }}
+
+      - name: Configure AWS Credentials for Prod (Docker)
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+        if: ${{ github.event.inputs.environment == 'prod' }}
+
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
 
       - name: Build & Push Patient Service
-        env:
-          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
         run: |
-          docker build -t $ECR_REGISTRY/patient-service:latest ./patient-service
-          docker push $ECR_REGISTRY/patient-service:latest
+          docker build -t patient-service ./services/patient-service
+          docker tag patient-service:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/patient-service:latest
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/patient-service:latest
 
       - name: Build & Push Appointment Service
-        env:
-          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
         run: |
-          docker build -t $ECR_REGISTRY/appointment-service:latest ./appointment-service
-          docker push $ECR_REGISTRY/appointment-service:latest
+          docker build -t appointment-service ./services/appointment-service
+          docker tag appointment-service:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/appointment-service:latest
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/appointment-service:latest
+
+  ecs-deploy:
+    name: Deploy ECS Services
+    runs-on: ubuntu-latest
+    needs: docker
+
+    steps:
+      - name: Configure AWS Credentials (ECS)
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_DEV }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_DEV }}
+          aws-region: ${{ env.AWS_REGION }}
+        if: ${{ github.event.inputs.environment == 'dev' }}
+
+      - name: Configure AWS Credentials for Stage (ECS)
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_STAGE }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_STAGE }}
+          aws-region: ${{ env.AWS_REGION }}
+        if: ${{ github.event.inputs.environment == 'stage' }}
+
+      - name: Configure AWS Credentials for Prod (ECS)
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+        if: ${{ github.event.inputs.environment == 'prod' }}
+
+      - name: Update ECS Services
+        run: |
+          aws ecs update-service --cluster ${{ github.event.inputs.environment }}-cluster --service patient-service --force-new-deployment
+          aws ecs update-service --cluster ${{ github.event.inputs.environment }}-cluster --service appointment-service --force-new-deployment
