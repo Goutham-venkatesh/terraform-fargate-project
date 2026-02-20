@@ -1,166 +1,96 @@
-name: Fargate Deployment
+name: Deploy Fargate Microservices
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Select environment to deploy'
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+          - stage
+          - prod
+
+env:
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
 
 jobs:
-  #####################################
-  # 1️⃣ Terraform & ECS Deploy for Dev
-  #####################################
-  deploy-dev:
-    name: Deploy Dev Environment
+  terraform:
+    name: Terraform Deploy
     runs-on: ubuntu-latest
-    environment:
-      name: dev
-      url: https://example-dev-app.com
+    environment: ${{ github.event.inputs.environment }}
+
     steps:
-      - name: Checkout Code
+      - name: Checkout Repo
         uses: actions/checkout@v3
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
-          terraform_version: 1.8.6
+          terraform_version: 1.7.9   # Use a stable Terraform version
 
-      - name: Configure AWS Credentials
+      - name: Setup AWS CLI
         uses: aws-actions/configure-aws-credentials@v2
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_DEV }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_DEV }}
+          aws-access-key-id: ${{ secrets['AWS_ACCESS_KEY_ID_' + github.event.inputs.environment] }}
+          aws-secret-access-key: ${{ secrets['AWS_SECRET_ACCESS_KEY_' + github.event.inputs.environment] }}
           aws-region: us-east-1
 
-      - name: Terraform Init (Dev)
+      - name: Terraform Init
+        working-directory: ./environments/${{ github.event.inputs.environment }}
         run: terraform init
-        working-directory: ./environments/dev
 
-      - name: Terraform Plan (Dev)
+      - name: Terraform Validate
+        working-directory: ./environments/${{ github.event.inputs.environment }}
+        run: terraform validate
+
+      - name: Terraform Plan
+        working-directory: ./environments/${{ github.event.inputs.environment }}
         run: terraform plan -out=tfplan
-        working-directory: ./environments/dev
+
+      - name: Terraform Apply (Manual Approval)
+        if: github.event.inputs.environment != 'dev'
+        uses: hmarr/auto-approve-action@v2
+        with:
+          comment: 'Approving Terraform Apply for non-dev environment'
+        # For stage/prod, use GitHub Environment Protection Rules to require approval
 
       - name: Terraform Apply (Dev)
-        run: terraform apply -auto-approve tfplan
+        if: github.event.inputs.environment == 'dev'
         working-directory: ./environments/dev
+        run: terraform apply -auto-approve tfplan
 
-      - name: Build & Push Docker Images (Dev)
-        run: |
-          docker build -t patient-service ./microservices/patient-service
-          docker tag patient-service:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/patient-service:dev
-          aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
-          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/patient-service:dev
-
-          docker build -t appointment-service ./microservices/appointment-service
-          docker tag appointment-service:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/appointment-service:dev
-          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/appointment-service:dev
-
-  #####################################
-  # 2️⃣ Stage Deployment (Requires Approval)
-  #####################################
-  deploy-stage:
-    name: Deploy Stage Environment
+  docker:
+    name: Build & Push Docker Images
     runs-on: ubuntu-latest
-    environment:
-      name: stage
-      url: https://example-stage-app.com
-    needs: deploy-dev
-    steps:
-      - name: Await Approval
-        uses: hmarr/auto-approve-action@v2
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          message: "Approve Stage Deployment"
+    needs: terraform
+    environment: ${{ github.event.inputs.environment }}
 
-      - name: Checkout Code
+    steps:
+      - name: Checkout Repo
         uses: actions/checkout@v3
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
-        with:
-          terraform_version: 1.8.6
-
-      - name: Configure AWS Credentials
+      - name: Setup AWS CLI
         uses: aws-actions/configure-aws-credentials@v2
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_STAGE }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_STAGE }}
+          aws-access-key-id: ${{ secrets['AWS_ACCESS_KEY_ID_' + github.event.inputs.environment] }}
+          aws-secret-access-key: ${{ secrets['AWS_SECRET_ACCESS_KEY_' + github.event.inputs.environment] }}
           aws-region: us-east-1
 
-      - name: Terraform Init (Stage)
-        run: terraform init
-        working-directory: ./environments/stage
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Terraform Plan (Stage)
-        run: terraform plan -out=tfplan
-        working-directory: ./environments/stage
-
-      - name: Terraform Apply (Stage)
-        run: terraform apply -auto-approve tfplan
-        working-directory: ./environments/stage
-
-      - name: Build & Push Docker Images (Stage)
+      - name: Build & Push Patient Service
         run: |
-          docker build -t patient-service ./microservices/patient-service
-          docker tag patient-service:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/patient-service:stage
-          aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
-          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/patient-service:stage
+          docker build -t patient-service ./patient-service
+          docker tag patient-service:latest ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/patient-service:latest
+          docker push ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/patient-service:latest
 
-          docker build -t appointment-service ./microservices/appointment-service
-          docker tag appointment-service:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/appointment-service:stage
-          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/appointment-service:stage
-
-  #####################################
-  # 3️⃣ Prod Deployment (Requires Approval)
-  #####################################
-  deploy-prod:
-    name: Deploy Prod Environment
-    runs-on: ubuntu-latest
-    environment:
-      name: prod
-      url: https://example-prod-app.com
-    needs: deploy-stage
-    steps:
-      - name: Await Approval
-        uses: hmarr/auto-approve-action@v2
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          message: "Approve Production Deployment"
-
-      - name: Checkout Code
-        uses: actions/checkout@v3
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
-        with:
-          terraform_version: 1.8.6
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
-          aws-region: us-east-1
-
-      - name: Terraform Init (Prod)
-        run: terraform init
-        working-directory: ./environments/prod
-
-      - name: Terraform Plan (Prod)
-        run: terraform plan -out=tfplan
-        working-directory: ./environments/prod
-
-      - name: Terraform Apply (Prod)
-        run: terraform apply -auto-approve tfplan
-        working-directory: ./environments/prod
-
-      - name: Build & Push Docker Images (Prod)
+      - name: Build & Push Appointment Service
         run: |
-          docker build -t patient-service ./microservices/patient-service
-          docker tag patient-service:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/patient-service:prod
-          aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
-          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/patient-service:prod
-
-          docker build -t appointment-service ./microservices/appointment-service
-          docker tag appointment-service:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/appointment-service:prod
-          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/appointment-service:prod
+          docker build -t appointment-service ./appointment-service
+          docker tag appointment-service:latest ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/appointment-service:latest
+          docker push ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/appointment-service:latest
