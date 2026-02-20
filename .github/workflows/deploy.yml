@@ -14,6 +14,7 @@ on:
           - prod
 
 env:
+  AWS_REGION: us-east-1
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
 
 jobs:
@@ -21,54 +22,39 @@ jobs:
     name: Terraform Deploy
     runs-on: ubuntu-latest
     environment: ${{ github.event.inputs.environment }}
+    
+    # Use standard shell for all steps
+    defaults:
+      run:
+        working-directory: ./environments/${{ github.event.inputs.environment }}
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
+        uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.7.9
+          terraform_version: "1.7.9"
 
-      - name: Configure AWS Credentials (Dev)
-        if: github.event.inputs.environment == 'dev'
-        uses: aws-actions/configure-aws-credentials@v2
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_DEV }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_DEV }}
-          aws-region: us-east-1
-
-      - name: Configure AWS Credentials (Stage)
-        if: github.event.inputs.environment == 'stage'
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_STAGE }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_STAGE }}
-          aws-region: us-east-1
-
-      - name: Configure AWS Credentials (Prod)
-        if: github.event.inputs.environment == 'prod'
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
-          aws-region: us-east-1
+          # Dynamically picks secret based on input (e.g., AWS_ACCESS_KEY_ID_DEV)
+          aws-access-key-id: ${{ secrets[format('AWS_ACCESS_KEY_ID_{0}', github.event.inputs.environment)] }}
+          aws-secret-access-key: ${{ secrets[format('AWS_SECRET_ACCESS_KEY_{0}', github.event.inputs.environment)] }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Terraform Init
-        working-directory: ./environments/${{ github.event.inputs.environment }}
         run: terraform init
 
       - name: Terraform Validate
-        working-directory: ./environments/${{ github.event.inputs.environment }}
         run: terraform validate
 
       - name: Terraform Plan
-        working-directory: ./environments/${{ github.event.inputs.environment }}
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
-        working-directory: ./environments/${{ github.event.inputs.environment }}
         run: terraform apply -auto-approve tfplan
 
   docker:
@@ -79,44 +65,29 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials (Dev)
-        if: github.event.inputs.environment == 'dev'
-        uses: aws-actions/configure-aws-credentials@v2
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_DEV }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_DEV }}
-          aws-region: us-east-1
-
-      - name: Configure AWS Credentials (Stage)
-        if: github.event.inputs.environment == 'stage'
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_STAGE }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_STAGE }}
-          aws-region: us-east-1
-
-      - name: Configure AWS Credentials (Prod)
-        if: github.event.inputs.environment == 'prod'
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
-          aws-region: us-east-1
+          aws-access-key-id: ${{ secrets[format('AWS_ACCESS_KEY_ID_{0}', github.event.inputs.environment)] }}
+          aws-secret-access-key: ${{ secrets[format('AWS_SECRET_ACCESS_KEY_{0}', github.event.inputs.environment)] }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build & Push Patient Service
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
         run: |
-          docker build -t patient-service ./patient-service
-          docker tag patient-service:latest ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/patient-service:latest
-          docker push ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/patient-service:latest
+          docker build -t $ECR_REGISTRY/patient-service:latest ./patient-service
+          docker push $ECR_REGISTRY/patient-service:latest
 
       - name: Build & Push Appointment Service
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
         run: |
-          docker build -t appointment-service ./appointment-service
-          docker tag appointment-service:latest ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/appointment-service:latest
-          docker push ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/appointment-service:latest
+          docker build -t $ECR_REGISTRY/appointment-service:latest ./appointment-service
+          docker push $ECR_REGISTRY/appointment-service:latest
