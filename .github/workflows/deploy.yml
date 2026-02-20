@@ -1,0 +1,161 @@
+name: Fargate Multi-Env CI/CD
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: us-east-1
+  ECS_CLUSTER_DEV: dev-cluster
+  ECS_CLUSTER_STAGE: stage-cluster
+  ECS_CLUSTER_PROD: prod-cluster
+  ECR_PATIENT_REPO: patient-service
+  ECR_APPOINTMENT_REPO: appointment-service
+  TF_WORKDIR_DEV: environments/dev
+  TF_WORKDIR_STAGE: environments/stage
+  TF_WORKDIR_PROD: environments/prod
+
+jobs:
+  # -----------------------
+  # 1️⃣ DEV Deployment
+  # -----------------------
+  dev-deploy:
+    name: Deploy to Dev
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials (Dev)
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_DEV }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_DEV }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Terraform Init & Apply (Dev)
+      working-directory: ${{ env.TF_WORKDIR_DEV }}
+      run: |
+        terraform init
+        terraform validate
+        terraform plan -out=tfplan
+        terraform apply -auto-approve tfplan
+
+    - name: Login to ECR
+      run: |
+        aws ecr get-login-password --region $AWS_REGION | \
+        docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com
+
+    - name: Build & push Docker images (Dev)
+      run: |
+        docker build -t $ECR_PATIENT_REPO ./services/patient-service
+        docker tag $ECR_PATIENT_REPO:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_PATIENT_REPO:latest
+        docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_PATIENT_REPO:latest
+
+        docker build -t $ECR_APPOINTMENT_REPO ./services/appointment-service
+        docker tag $ECR_APPOINTMENT_REPO:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_APPOINTMENT_REPO:latest
+        docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_APPOINTMENT_REPO:latest
+
+    - name: Update ECS Services (Dev)
+      run: |
+        aws ecs update-service --cluster $ECS_CLUSTER_DEV --service dev-patient-service --force-new-deployment
+        aws ecs update-service --cluster $ECS_CLUSTER_DEV --service dev-appointment-service --force-new-deployment
+
+  # -----------------------
+  # 2️⃣ Stage Deployment (Requires Approval)
+  # -----------------------
+  stage-deploy:
+    name: Deploy to Stage
+    runs-on: ubuntu-latest
+    needs: dev-deploy
+    environment:
+      name: stage
+      url: https://stage.example.com
+    steps:
+    - name: Await Manual Approval
+      uses: hmarr/auto-approve-action@v2
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials (Stage)
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_STAGE }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_STAGE }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Terraform Init & Apply (Stage)
+      working-directory: ${{ env.TF_WORKDIR_STAGE }}
+      run: |
+        terraform init
+        terraform validate
+        terraform plan -out=tfplan
+        terraform apply -auto-approve tfplan
+
+    - name: Build & push Docker images (Stage)
+      run: |
+        docker build -t $ECR_PATIENT_REPO ./services/patient-service
+        docker tag $ECR_PATIENT_REPO:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_PATIENT_REPO:latest
+        docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_PATIENT_REPO:latest
+
+        docker build -t $ECR_APPOINTMENT_REPO ./services/appointment-service
+        docker tag $ECR_APPOINTMENT_REPO:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_APPOINTMENT_REPO:latest
+        docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_APPOINTMENT_REPO:latest
+
+    - name: Update ECS Services (Stage)
+      run: |
+        aws ecs update-service --cluster $ECS_CLUSTER_STAGE --service stage-patient-service --force-new-deployment
+        aws ecs update-service --cluster $ECS_CLUSTER_STAGE --service stage-appointment-service --force-new-deployment
+
+  # -----------------------
+  # 3️⃣ Prod Deployment (Requires Approval)
+  # -----------------------
+  prod-deploy:
+    name: Deploy to Prod
+    runs-on: ubuntu-latest
+    needs: stage-deploy
+    environment:
+      name: prod
+      url: https://prod.example.com
+    steps:
+    - name: Await Manual Approval
+      uses: hmarr/auto-approve-action@v2
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials (Prod)
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Terraform Init & Apply (Prod)
+      working-directory: ${{ env.TF_WORKDIR_PROD }}
+      run: |
+        terraform init
+        terraform validate
+        terraform plan -out=tfplan
+        terraform apply -auto-approve tfplan
+
+    - name: Build & push Docker images (Prod)
+      run: |
+        docker build -t $ECR_PATIENT_REPO ./services/patient-service
+        docker tag $ECR_PATIENT_REPO:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_PATIENT_REPO:latest
+        docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_PATIENT_REPO:latest
+
+        docker build -t $ECR_APPOINTMENT_REPO ./services/appointment-service
+        docker tag $ECR_APPOINTMENT_REPO:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_APPOINTMENT_REPO:latest
+        docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_APPOINTMENT_REPO:latest
+
+    - name: Update ECS Services (Prod)
+      run: |
+        aws ecs update-service --cluster $ECS_CLUSTER_PROD --service prod-patient-service --force-new-deployment
+        aws ecs update-service --cluster $ECS_CLUSTER_PROD --service prod-appointment-service --force-new-deployment
